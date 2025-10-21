@@ -292,6 +292,8 @@ function convertApiProviderToProto(provider: string | undefined): ProtoApiProvid
 			return ProtoApiProvider.SHENG_SUAN_YUN
 		case "huawei-cloud-maas":
 			return ProtoApiProvider.HUAWEI_CLOUD_MAAS
+		case "openai-responses":
+			return ProtoApiProvider.OPENAI_RESPONSES
 		default:
 			return ProtoApiProvider.SHENG_SUAN_YUN
 	}
@@ -364,6 +366,8 @@ function convertProtoToApiProvider(provider: ProtoApiProvider): ApiProvider {
 			return "shengsuanyun"
 		case ProtoApiProvider.HUAWEI_CLOUD_MAAS:
 			return "huawei-cloud-maas"
+		case ProtoApiProvider.OPENAI_RESPONSES:
+			return "openai-responses"
 		default:
 			return "shengsuanyun"
 	}

@@ -34,6 +34,7 @@ import { Mode } from "@shared/storage/types"
 import { HuggingFaceHandler } from "./providers/huggingface"
 import { HuaweiCloudMaaSHandler } from "./providers/huawei-cloud-maas"
 import { BasetenHandler } from "./providers/baseten"
+import { OpenAiResponsesHandler } from "./providers/openai-responses"
 
 export interface ApiHandler {
 	createMessage(systemPrompt: string, messages: Anthropic.Messages.MessageParam[]): ApiStream
@@ -109,6 +110,19 @@ function createHandlerForProvider(
 				openAiHeaders: options.openAiHeaders,
 				openAiModelId: mode === "plan" ? options.planModeOpenAiModelId : options.actModeOpenAiModelId,
 				openAiModelInfo: mode === "plan" ? options.planModeOpenAiModelInfo : options.actModeOpenAiModelInfo,
+				reasoningEffort: mode === "plan" ? options.planModeReasoningEffort : options.actModeReasoningEffort,
+			})
+		case "openai-responses":
+			return new OpenAiResponsesHandler({
+				openAiApiKey: options.openAiApiKey,
+				openAiBaseUrl: options.openAiBaseUrl,
+				openAiModelId: mode === "plan" ? options.planModeApiModelId : options.actModeApiModelId,
+				enableStatefulChaining: options.openAiResponsesEnableStatefulChaining ?? true,
+				maxOutputTokens:
+					mode === "plan"
+						? options.planModeOpenAiResponsesMaxOutputTokens
+						: options.actModeOpenAiResponsesMaxOutputTokens,
+				temperature: options.openAiResponsesTemperature,
 				reasoningEffort: mode === "plan" ? options.planModeReasoningEffort : options.actModeReasoningEffort,
 			})
 		case "ollama":

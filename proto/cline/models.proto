@@ -136,6 +136,7 @@ enum ApiProvider {
   HUAWEI_CLOUD_MAAS = 29;
   BASETEN = 30;
   SHENG_SUAN_YUN = 31;
+  OPENAI_RESPONSES = 32;
 }
 
 // Model info for OpenAI-compatible models
@@ -242,6 +243,8 @@ message ModelsApiConfiguration {
   optional string ollama_api_key = 64;
   optional string sheng_suan_yun_token = 65;
   optional string sheng_suan_yun_api_key = 66;
+  optional bool open_ai_responses_enable_stateful_chaining = 67;
+  optional double open_ai_responses_temperature = 68;
 
   // Plan mode configurations
   optional ApiProvider plan_mode_api_provider = 100;
@@ -274,6 +277,7 @@ message ModelsApiConfiguration {
   optional OpenRouterModelInfo plan_mode_baseten_model_info = 127;
   optional string plan_mode_sheng_suan_yun_model_id = 128;
   optional ShengSuanYunModelInfo plan_mode_sheng_suan_yun_model_info = 129;
+  optional int32 plan_mode_open_ai_responses_max_output_tokens = 130;
 
   // Act mode configurations
   optional ApiProvider act_mode_api_provider = 200;
@@ -306,6 +310,7 @@ message ModelsApiConfiguration {
   optional OpenRouterModelInfo act_mode_baseten_model_info = 227;
   optional string act_mode_sheng_suan_yun_model_id = 228;
   optional ShengSuanYunModelInfo act_mode_sheng_suan_yun_model_info = 229;
+  optional int32 act_mode_open_ai_responses_max_output_tokens = 230;
 
   repeated string favorited_model_ids = 300;
 }

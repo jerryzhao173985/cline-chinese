@@ -27,6 +27,7 @@ import { XaiProvider } from "./providers/XaiProvider"
 import { CerebrasProvider } from "./providers/CerebrasProvider"
 import { OllamaProvider } from "./providers/OllamaProvider"
 import { ClaudeCodeProvider } from "./providers/ClaudeCodeProvider"
+import { OpenAIResponsesProvider } from "./providers/OpenAIResponsesProvider"
 import { SapAiCoreProvider } from "./providers/SapAiCoreProvider"
 import { BedrockProvider } from "./providers/BedrockProvider"
 import { MoonshotProvider } from "./providers/MoonshotProvider"
@@ -150,6 +151,7 @@ const ApiOptions = ({ showModelOptions, apiErrorMessage, modelIdErrorMessage, is
 					<VSCodeOption value="groq">Groq</VSCodeOption>
 					<VSCodeOption value="deepseek">DeepSeek</VSCodeOption>
 					<VSCodeOption value="openai-native">OpenAI</VSCodeOption>
+					<VSCodeOption value="openai-responses">OpenAI Responses API</VSCodeOption>
 					<VSCodeOption value="cerebras">Cerebras</VSCodeOption>
 					<VSCodeOption value="baseten">Baseten</VSCodeOption>
 					<VSCodeOption value="vscode-lm">VS Code LM API</VSCodeOption>
@@ -193,6 +195,10 @@ const ApiOptions = ({ showModelOptions, apiErrorMessage, modelIdErrorMessage, is
 
 			{apiConfiguration && selectedProvider === "openai-native" && (
 				<OpenAINativeProvider showModelOptions={showModelOptions} isPopup={isPopup} currentMode={currentMode} />
+			)}
+
+			{apiConfiguration && selectedProvider === "openai-responses" && (
+				<OpenAIResponsesProvider showModelOptions={showModelOptions} isPopup={isPopup} currentMode={currentMode} />
 			)}
 
 			{apiConfiguration && selectedProvider === "qwen" && (

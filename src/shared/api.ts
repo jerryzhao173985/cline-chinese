@@ -8,6 +8,7 @@ export type ApiProvider =
 	| "bedrock"
 	| "vertex"
 	| "openai"
+	| "openai-responses"
 	| "ollama"
 	| "lmstudio"
 	| "gemini"
@@ -102,8 +103,12 @@ export interface ApiHandlerOptions {
 	sapAiCoreTokenUrl?: string
 	sapAiCoreBaseUrl?: string
 	huaweiCloudMaasApiKey?: string
+	// OpenAI Responses API specific configuration
+	openAiResponsesEnableStatefulChaining?: boolean
+	openAiResponsesTemperature?: number
 	onRetryAttempt?: (attempt: number, maxRetries: number, delay: number, error: any) => void
 	// Plan mode configurations
+	planModeOpenAiResponsesMaxOutputTokens?: number
 	planModeApiModelId?: string
 	planModeThinkingBudgetTokens?: number
 	planModeReasoningEffort?: string
@@ -165,6 +170,7 @@ export interface ApiHandlerOptions {
 	actModeShengSuanYunModelInfo?: ShengSuanYunModelInfo
 	actModeHuaweiCloudMaasModelId?: string
 	actModeHuaweiCloudMaasModelInfo?: ModelInfo
+	actModeOpenAiResponsesMaxOutputTokens?: number
 }
 
 export type ApiConfiguration = ApiHandlerOptions & {
@@ -1226,6 +1232,117 @@ export const openAiNativeModels = {
 		supportsPromptCache: false,
 		inputPrice: 5,
 		outputPrice: 15,
+	},
+} as const satisfies Record<string, ModelInfo>
+
+// OpenAI Responses API
+// https://platform.openai.com/docs/api-reference/responses
+// Released March 2025 - Successor to Chat Completions API
+// Key features: Stateful chaining with previous_response_id, reasoning models support, async responses
+export type OpenAiResponsesModelId = keyof typeof openAiResponsesModels
+export const openAiResponsesDefaultModelId: OpenAiResponsesModelId = "gpt-5-codex"
+export const openAiResponsesModels = {
+	// GPT-5 Series - General purpose models with large context
+	"gpt-5": {
+		maxTokens: 128_000,
+		contextWindow: 400_000,
+		supportsImages: true,
+		supportsPromptCache: false, // Responses API doesn't use prompt caching
+		inputPrice: 1.0,
+		outputPrice: 3.0,
+		description: "GPT-5 - Most capable reasoning model with 400K context",
+	},
+	"gpt-5-codex": {
+		maxTokens: 128_000,
+		contextWindow: 400_000,
+		supportsImages: true,
+		supportsPromptCache: false,
+		inputPrice: 1.0,
+		outputPrice: 3.0,
+		description: "GPT-5 Codex - Optimized for coding tasks with 400K context",
+	},
+	"gpt-5-thinking": {
+		maxTokens: 128_000,
+		contextWindow: 400_000,
+		supportsImages: true,
+		supportsPromptCache: false,
+		inputPrice: 1.0,
+		outputPrice: 3.0,
+		description: "GPT-5 Thinking - Extended reasoning capabilities",
+	},
+	"gpt-5-pro": {
+		maxTokens: 128_000,
+		contextWindow: 400_000,
+		supportsImages: true,
+		supportsPromptCache: false,
+		inputPrice: 1.5,
+		outputPrice: 4.5,
+		description: "GPT-5 Pro - Enhanced performance and quality",
+	},
+	"gpt-5-mini": {
+		maxTokens: 64_000,
+		contextWindow: 200_000,
+		supportsImages: true,
+		supportsPromptCache: false,
+		inputPrice: 0.5,
+		outputPrice: 1.5,
+		description: "GPT-5 Mini - Faster and more cost-effective",
+	},
+
+	// o-Series Reasoning Models - Advanced reasoning with explicit thinking
+	"o4-mini": {
+		maxTokens: 100_000,
+		contextWindow: 200_000,
+		supportsImages: false,
+		supportsPromptCache: false,
+		inputPrice: 0.6,
+		outputPrice: 1.8,
+		description: "o4-mini - Fast reasoning model with 200K context",
+	},
+	"o3-pro": {
+		maxTokens: 100_000,
+		contextWindow: 200_000,
+		supportsImages: false,
+		supportsPromptCache: false,
+		inputPrice: 1.5,
+		outputPrice: 4.5,
+		description: "o3-pro - Advanced reasoning with extended thinking",
+	},
+	o3: {
+		maxTokens: 100_000,
+		contextWindow: 200_000,
+		supportsImages: false,
+		supportsPromptCache: false,
+		inputPrice: 1.0,
+		outputPrice: 3.0,
+		description: "o3 - High-quality reasoning model",
+	},
+	"o3-mini": {
+		maxTokens: 100_000,
+		contextWindow: 200_000,
+		supportsImages: false,
+		supportsPromptCache: false,
+		inputPrice: 0.5,
+		outputPrice: 1.5,
+		description: "o3-mini - Cost-effective reasoning",
+	},
+	o1: {
+		maxTokens: 100_000,
+		contextWindow: 200_000,
+		supportsImages: false,
+		supportsPromptCache: false,
+		inputPrice: 1.5,
+		outputPrice: 4.5,
+		description: "o1 - Original reasoning model",
+	},
+	"o1-mini": {
+		maxTokens: 65_536,
+		contextWindow: 128_000,
+		supportsImages: false,
+		supportsPromptCache: false,
+		inputPrice: 0.3,
+		outputPrice: 0.9,
+		description: "o1-mini - Compact reasoning model",
 	},
 } as const satisfies Record<string, ModelInfo>
 
