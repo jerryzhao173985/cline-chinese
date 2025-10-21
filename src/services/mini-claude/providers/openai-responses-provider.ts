@@ -367,9 +367,12 @@ export class OpenAIResponsesProvider {
 				const errorText = await initialResponse.text()
 				let errorMessage = `HTTP ${initialResponse.status}: ${initialResponse.statusText}`
 				let fullError = errorText
+				let errorCode: string | undefined
+
 				try {
 					const errorJson = JSON.parse(errorText)
 					errorMessage = errorJson.error?.message || errorJson.message || errorMessage
+					errorCode = errorJson.error?.code
 					fullError = JSON.stringify(errorJson, null, 2)
 				} catch (e) {
 					// Error text is not JSON
@@ -380,6 +383,27 @@ export class OpenAIResponsesProvider {
 					statusText: initialResponse.statusText,
 					error: fullError,
 				})
+
+				// Handle context_length_exceeded specifically
+				if (errorCode === "context_length_exceeded") {
+					// Reset stateful chaining to start fresh
+					this.lastResponseId = undefined
+
+					SecureLogger.log("error", "Context window exceeded - resetting stateful chaining", {
+						previousResponseId: this.lastResponseId,
+						messagesCount: requestParams.input.length,
+					})
+
+					throw new Error(
+						`Context window exceeded! The conversation is too long.\n\n` +
+							`What happened: Your conversation + tool results exceeded the model's context limit.\n\n` +
+							`What to do:\n` +
+							`1. Start a new task (conversation will be reset)\n` +
+							`2. Use more specific prompts to reduce context\n` +
+							`3. Avoid large file searches - use targeted file reads instead\n\n` +
+							`Technical details: ${errorMessage}`,
+					)
+				}
 
 				throw new Error(`OpenAI Responses API error: ${errorMessage}\n\nFull error: ${fullError}`)
 			}
