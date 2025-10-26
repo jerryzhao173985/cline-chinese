@@ -53,7 +53,7 @@ const ErrorRow = memo(({ message, errorType, apiRequestFailedMessage, apiReqStre
 
 					if (ssyError?.isErrorType(SSYErrorType.RateLimit)) {
 						return (
-							<p className="m-0 whitespace-pre-wrap text-[var(--vscode-errorForeground)] wrap-anywhere">
+							<p className="m-0 whitespace-pre-wrap text-[var(--vscode-errorForeground)] break-words max-w-full">
 								{ssyErrorMessage}
 								{requestId && <div>请求 ID: {requestId}</div>}
 							</p>
@@ -63,7 +63,7 @@ const ErrorRow = memo(({ message, errorType, apiRequestFailedMessage, apiReqStre
 					if (ssyError?.isErrorType(SSYErrorType.QuotaExceeded)) {
 						return (
 							<>
-								<p className="m-0 whitespace-pre-wrap text-[var(--vscode-errorForeground)] wrap-anywhere">
+								<p className="m-0 whitespace-pre-wrap text-[var(--vscode-errorForeground)] break-words max-w-full">
 									{ssyErrorMessage}
 									{requestId && <div>请求 ID: {requestId}</div>}
 								</p>
@@ -80,7 +80,7 @@ const ErrorRow = memo(({ message, errorType, apiRequestFailedMessage, apiReqStre
 					if (ssyError?.isErrorType(SSYErrorType.TpmLimitExceeded)) {
 						return (
 							<>
-								<p className="m-0 whitespace-pre-wrap text-[var(--vscode-errorForeground)] wrap-anywhere">
+								<p className="m-0 whitespace-pre-wrap text-[var(--vscode-errorForeground)] break-words max-w-full">
 									{ssyErrorMessage}
 									{requestId && <div>请求 ID: {requestId}</div>}
 								</p>
@@ -103,7 +103,7 @@ const ErrorRow = memo(({ message, errorType, apiRequestFailedMessage, apiReqStre
 					if (ssyError?.isErrorType(SSYErrorType.RpmLimitExceeded)) {
 						return (
 							<>
-								<p className="m-0 whitespace-pre-wrap text-[var(--vscode-errorForeground)] wrap-anywhere">
+								<p className="m-0 whitespace-pre-wrap text-[var(--vscode-errorForeground)] break-words max-w-full">
 									{ssyErrorMessage}
 									{requestId && <div>请求 ID: {requestId}</div>}
 								</p>
@@ -126,7 +126,7 @@ const ErrorRow = memo(({ message, errorType, apiRequestFailedMessage, apiReqStre
 
 					// Default error display
 					return (
-						<p className="m-0 whitespace-pre-wrap text-[var(--vscode-errorForeground)] wrap-anywhere">
+						<p className="m-0 whitespace-pre-wrap text-[var(--vscode-errorForeground)] break-words max-w-full">
 							{ssyErrorMessage}
 							{requestId && <div>请求 ID: {requestId}</div>}
 							{ssyErrorMessage?.toLowerCase()?.includes("powershell") && (
@@ -149,7 +149,7 @@ const ErrorRow = memo(({ message, errorType, apiRequestFailedMessage, apiReqStre
 									{/* The user is signed in or not using cline provider */}
 									{ssyUser && !isSSYProvider ? (
 										<span className="mb-4 text-[var(--vscode-descriptionForeground)]">
-											(点击下方的“重试”)
+											(点击下方的"重试")
 										</span>
 									) : (
 										<VSCodeButton
@@ -170,7 +170,7 @@ const ErrorRow = memo(({ message, errorType, apiRequestFailedMessage, apiReqStre
 
 				// Regular error message
 				return (
-					<p className="m-0 whitespace-pre-wrap text-[var(--vscode-errorForeground)] wrap-anywhere">{message.text}</p>
+					<p className="m-0 whitespace-pre-wrap text-[var(--vscode-errorForeground)] break-words max-w-full">{message.text}</p>
 				)
 
 			case "diff_error":

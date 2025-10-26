@@ -233,4 +233,6 @@ export interface ProviderConfig {
 	enableStatefulChaining?: boolean
 	maxOutputTokens?: number
 	temperature?: number
+	/** Enable automatic context compression (default: true) */
+	autoCompactEnabled?: boolean
 }

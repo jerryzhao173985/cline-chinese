@@ -2370,6 +2370,16 @@ export class ToolExecutor {
 						break
 					}
 				} catch (error) {
+					// CRITICAL FIX: Handle regeneration gracefully - prevents confusing error messages
+					// When user clicks "Regenerate" during completion approval, the ask() at line 2329
+					// throws "Current ask promise was ignored" which is expected control flow, not an error
+					if (error instanceof Error && error.message === "Current ask promise was ignored") {
+						console.log("🔄 Regeneration triggered during completion approval - exiting gracefully")
+						this.taskState.didRejectTool = true
+						break
+					}
+
+					// All other errors go through normal error handling
 					await this.handleError("attempting completion", error, block)
 					await this.saveCheckpoint()
 					break

@@ -1,12 +1,9 @@
 /**
  * Token counting utilities
  *
- * Ported from mini-claude-code with adaptations for Cline message format
- *
- * Used to estimate token usage in conversation messages for context compression
+ * Simplified version for new context management system
+ * Only includes functions actively used by SimpleContextMonitor
  */
-
-import { ThresholdInfo } from "../types/context"
 
 /**
  * Estimate the number of tokens in text
@@ -85,56 +82,4 @@ export function countTotalTokens(messages: any[]): number {
 	}
 
 	return total
-}
-
-/**
- * Calculate threshold information
- *
- * @param tokenCount - Current token count
- * @param contextLimit - Context limit (default 200K tokens)
- * @param thresholdRatio - Threshold ratio (default 0.92 = 92%)
- * @returns Threshold information object
- */
-export function calculateThresholds(
-	tokenCount: number,
-	contextLimit: number = 200_000,
-	thresholdRatio: number = 0.92,
-): ThresholdInfo {
-	const autoCompactThreshold = Math.floor(contextLimit * thresholdRatio)
-
-	return {
-		isAboveAutoCompactThreshold: tokenCount >= autoCompactThreshold,
-		percentUsed: Math.round((tokenCount / contextLimit) * 100),
-		tokensRemaining: Math.max(0, autoCompactThreshold - tokenCount),
-		contextLimit,
-		autoCompactThreshold,
-	}
-}
-
-/**
- * Format token count for display
- *
- * @param count - Token count
- * @returns Formatted string (e.g., "12.5K" or "200K")
- */
-export function formatTokenCount(count: number): string {
-	if (count >= 1_000_000) {
-		return `${(count / 1_000_000).toFixed(1)}M`
-	}
-	if (count >= 1_000) {
-		return `${(count / 1_000).toFixed(1)}K`
-	}
-	return count.toString()
-}
-
-/**
- * Calculate percentage usage
- *
- * @param used - Used tokens
- * @param total - Total available tokens
- * @returns Percentage (0-100)
- */
-export function calculatePercentage(used: number, total: number): number {
-	if (total <= 0) return 0
-	return Math.round((used / total) * 100)
 }

@@ -16,6 +16,7 @@ import McpResourceRow from "@/components/mcp/configuration/tabs/installed/server
 import McpToolRow from "@/components/mcp/configuration/tabs/installed/server-row/McpToolRow"
 import { useExtensionState } from "@/context/ExtensionStateContext"
 import { FileServiceClient, TaskServiceClient, UiServiceClient } from "@/services/grpc-client"
+import { vscode } from "@/utils/vscode"
 import { findMatchingResourceOrTemplate, getMcpServerDisplayName } from "@/utils/mcp"
 import {
 	ClineApiReqInfo,
@@ -37,6 +38,7 @@ import UserMessage from "./UserMessage"
 import QuoteButton from "./QuoteButton"
 import ErrorRow from "./ErrorRow"
 import { ErrorBlockTitle } from "./ErrorBlockTitle"
+import ModelSwitcherDropdown from "./ModelSwitcherDropdown"
 
 const normalColor = "var(--vscode-foreground)"
 const errorColor = "var(--vscode-errorForeground)"
@@ -62,6 +64,9 @@ interface ChatRowProps {
 	inputValue?: string
 	sendMessageFromChatRow?: (text: string, images: string[], files: string[]) => void
 	onSetQuote: (text: string) => void
+	isApiResponse?: boolean
+	previousMessage?: ClineMessage
+	apiRequestMessage?: ClineMessage // The most recent api_req_started message (skipping checkpoints)
 }
 
 interface QuoteButtonState {
@@ -148,8 +153,11 @@ export const ChatRowContent = memo(
 		inputValue,
 		sendMessageFromChatRow,
 		onSetQuote,
+		isApiResponse,
+		previousMessage,
+		apiRequestMessage,
 	}: ChatRowContentProps) => {
-		const { mcpServers, mcpMarketplaceCatalog, onRelinquishControl, apiConfiguration } = useExtensionState()
+		const { mcpServers, mcpMarketplaceCatalog, onRelinquishControl, apiConfiguration, mode } = useExtensionState()
 		const [seeNewChangesDisabled, setSeeNewChangesDisabled] = useState(false)
 		const [quoteButtonState, setQuoteButtonState] = useState<QuoteButtonState>({
 			visible: false,
@@ -157,6 +165,33 @@ export const ChatRowContent = memo(
 			left: 0,
 			selectedText: "",
 		})
+
+		// Handle model regeneration
+		const handleRegenerate = useCallback((modelId: string, conversationHistoryIndex: number) => {
+			console.log("🔄 [UI] Regenerate requested:", {
+				modelId,
+				conversationHistoryIndex,
+				apiRequestMessage: apiRequestMessage ? {
+					say: apiRequestMessage.say,
+					conversationHistoryIndex: apiRequestMessage.conversationHistoryIndex,
+					ts: apiRequestMessage.ts
+				} : 'none',
+				previousMessage: previousMessage ? {
+					say: previousMessage.say,
+					conversationHistoryIndex: previousMessage.conversationHistoryIndex,
+					ts: previousMessage.ts
+				} : 'none'
+			})
+
+			// Send message to extension to regenerate from this point with new model
+			vscode.postMessage({
+				type: "regenerateFromPoint",
+				regenerateFromPoint: {
+					modelId,
+					conversationHistoryIndex
+				}
+			})
+		}, [apiRequestMessage, previousMessage])
 		const contentRef = useRef<HTMLDivElement>(null)
 		const [cost, apiReqCancelReason, apiReqStreamingFailedMessage, retryStatus] = useMemo(() => {
 			if (message.text != null && message.say === "api_req_started") {
@@ -989,23 +1024,78 @@ export const ChatRowContent = memo(
 							</div>
 						)
 					case "text":
+						// Model switcher for OpenAI Responses API only
+						const provider = mode === "plan" ? apiConfiguration?.planModeApiProvider : apiConfiguration?.actModeApiProvider
+
+						// Check for "openai-responses" provider
+						const isOpenAIResponses = provider === "openai-responses"
+
+						// CRITICAL FIX: Use apiRequestMessage instead of previousMessage
+						// apiRequestMessage is found by searching backwards, skipping checkpoints
+						const apiReqIndex = apiRequestMessage?.conversationHistoryIndex
+						const showModelSwitcher = isOpenAIResponses && apiReqIndex !== undefined && !message.partial
+
+						// Get current model ID for OpenAI Responses API
+						// For openai-responses provider, use actModeApiModelId / planModeApiModelId
+						const currentModelId = mode === "plan"
+							? apiConfiguration?.planModeApiModelId
+							: apiConfiguration?.actModeApiModelId
+
+						// Debug logging
+						console.log('🔍 Model Switcher Check (text message):', {
+							provider,
+							isOpenAIResponses,
+							apiReqIndex,
+							currentModelId,
+							apiRequestMessage: apiRequestMessage ? {
+								say: apiRequestMessage.say,
+								conversationHistoryIndex: apiRequestMessage.conversationHistoryIndex,
+								ts: apiRequestMessage.ts
+							} : 'NO API REQUEST MESSAGE',
+							previousMessage: previousMessage ? {
+								say: previousMessage.say,
+								conversationHistoryIndex: previousMessage.conversationHistoryIndex
+							} : 'NO PREVIOUS MESSAGE',
+							showModelSwitcher,
+							isPartial: message.partial,
+							mode,
+							reasons: {
+								providerMatch: provider === "openai-responses",
+								hasApiReqIndex: apiReqIndex !== undefined,
+								hasApiRequestMessage: apiRequestMessage !== undefined,
+								isNotPartial: !message.partial
+							}
+						})
+
 						return (
-							<WithCopyButton
-								ref={contentRef}
-								onMouseUp={handleMouseUp}
-								textToCopy={message.text}
-								position="bottom-right">
-								<Markdown markdown={message.text} />
-								{quoteButtonState.visible && (
-									<QuoteButton
-										top={quoteButtonState.top}
-										left={quoteButtonState.left}
-										onClick={() => {
-											handleQuoteClick()
-										}}
+							<>
+								<WithCopyButton
+									ref={contentRef}
+									onMouseUp={handleMouseUp}
+									textToCopy={message.text}
+									position="bottom-right">
+									<Markdown markdown={message.text} />
+									{quoteButtonState.visible && (
+										<QuoteButton
+											top={quoteButtonState.top}
+											left={quoteButtonState.left}
+											onClick={() => {
+												handleQuoteClick()
+											}}
+										/>
+									)}
+								</WithCopyButton>
+								{showModelSwitcher && (
+									<ModelSwitcherDropdown
+										currentModel={currentModelId || "gpt-5-codex"}
+										conversationHistoryIndex={apiReqIndex}
+										onRegenerate={handleRegenerate}
+										provider={provider}
+										isLastApiResponse={isLast}
+										isResponseComplete={!message.partial}
 									/>
 								)}
-							</WithCopyButton>
+							</>
 						)
 					case "reasoning":
 						return (
@@ -1264,6 +1354,19 @@ export const ChatRowContent = memo(
 						if (message.text) {
 							const hasChanges = message.text.endsWith(COMPLETION_RESULT_CHANGES_FLAG) ?? false
 							const text = hasChanges ? message.text.slice(0, -COMPLETION_RESULT_CHANGES_FLAG.length) : message.text
+
+							// Model switcher for OpenAI Responses API (same logic as "text" case)
+							const provider = mode === "plan" ? apiConfiguration?.planModeApiProvider : apiConfiguration?.actModeApiProvider
+							const isOpenAIResponses = provider === "openai-responses"
+							const apiReqIndex = previousMessage?.say === "api_req_started" ? previousMessage?.conversationHistoryIndex : undefined
+							const showModelSwitcher = isOpenAIResponses && apiReqIndex !== undefined
+
+							// Get current model ID for OpenAI Responses API
+							// For openai-responses provider, use actModeApiModelId / planModeApiModelId
+							const currentModelId = mode === "plan"
+								? apiConfiguration?.planModeApiModelId
+								: apiConfiguration?.actModeApiModelId
+
 							return (
 								<div>
 									<div
@@ -1303,6 +1406,17 @@ export const ChatRowContent = memo(
 											/>
 										)}
 									</WithCopyButton>
+									{/* Add model switcher for completion_result just like for text messages */}
+									{showModelSwitcher && (
+										<ModelSwitcherDropdown
+											currentModel={currentModelId || "gpt-5-codex"}
+											conversationHistoryIndex={apiReqIndex}
+											onRegenerate={handleRegenerate}
+											provider={provider}
+											isLastApiResponse={isLast}
+											isResponseComplete={!message.partial}
+										/>
+									)}
 									{message.partial !== true && hasChanges && (
 										<div style={{ marginTop: 15 }}>
 											<SuccessButton

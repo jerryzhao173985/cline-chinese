@@ -11,6 +11,23 @@ export const formatResponse = {
 	contextTruncationNotice: () =>
 		`[注意] 为保持最佳上下文窗口长度，部分之前与用户的对话历史已被移除。初始用户任务和最新的交互已保留以维持连续性，而中间的对话历史已被移除。请在继续协助用户时牢记这一点。`,
 
+	autoCompactNotice: (summary: string, stats: {
+		messagesBefore: number;
+		messagesAfter: number;
+		tokensBefore: number;
+		tokensAfter: number;
+		recentFiles?: string[];
+	}) =>
+		`[自动压缩通知]\n\n` +
+		`对话已自动压缩以管理上下文窗口。\n\n` +
+		`**压缩统计**:\n` +
+		`- 消息: ${stats.messagesBefore} → ${stats.messagesAfter}\n` +
+		`- 令牌: ${stats.tokensBefore} → ${stats.tokensAfter}\n` +
+		`- 节省: ${stats.tokensBefore - stats.tokensAfter} 令牌 (${Math.round(((stats.tokensBefore - stats.tokensAfter) / stats.tokensBefore) * 100)}%)\n\n` +
+		`${summary}\n\n` +
+		`**对话从此处继续。基本上下文已保留。**\n\n` +
+		`<explicit_instructions type="auto_compact_response">继续执行当前任务。不要询问用户接下来应该做什么 - 压缩是自动的，不需要用户确认。根据摘要中的上下文继续工作。</explicit_instructions>`,
+
 	condense: () =>
 		`用户已接受您生成的压缩对话摘要。此摘要涵盖了与用户的历史对话的重要细节，这些对话已被截断。\n<explicit_instructions type="condense_response">您必须只通过询问用户接下来应该处理什么来回应。您不应该主动行动或做出任何假设来继续工作。例如，您不应该建议文件更改或尝试读取任何文件。\n在询问用户接下来应该处理什么时，您可以引用刚刚生成的摘要中的信息。但是，在此回应中，您不应该引用摘要之外的信息。保持此回应简洁。</explicit_instructions>`,
 

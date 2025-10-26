@@ -11,7 +11,7 @@ import { cleanupLegacyCheckpoints } from "@integrations/checkpoints/CheckpointMi
 import { downloadTask } from "@integrations/misc/export-markdown"
 import { ClineAccountService } from "@services/account/ClineAccountService"
 import { McpHub } from "@services/mcp/McpHub"
-import { ApiProvider, ModelInfo } from "@shared/api"
+import { ApiConfiguration, ApiProvider, ModelInfo } from "@shared/api"
 import { ChatContent } from "@shared/ChatContent"
 import { ExtensionState, Platform } from "@shared/ExtensionMessage"
 import { HistoryItem } from "@shared/HistoryItem"
@@ -773,6 +773,180 @@ export class Controller {
 	VSCode docs about state: "The value must be JSON-stringifyable ... value — A value. MUST not contain cyclic references."
 	For now we'll store the conversation history in memory, and if we need to store in state directly we'd need to do a manual conversion to ensure proper json stringification.
 	*/
+
+	/**
+	 * Handle regenerating a response from a specific point with a different model
+	 * This is specifically designed for OpenAI Responses API models
+	 */
+	async handleRegenerateFromPoint(modelId: string, conversationHistoryIndex: number) {
+		try {
+			if (!this.task) {
+				console.error("❌ No active task to regenerate from")
+				return
+			}
+
+			const currentApiConfig = this.cacheService.getApiConfiguration()
+			const currentMode = await this.getCurrentMode()
+			const provider = currentMode === "plan" ? currentApiConfig.planModeApiProvider : currentApiConfig.actModeApiProvider
+
+			// Support both OpenAI providers
+			if (provider !== "openai-responses" && provider !== "openai") {
+				console.error("❌ Provider not supported:", provider)
+				return
+			}
+
+			// Get conversation history for debugging
+			const apiHistory = this.task.messageStateHandler.getApiConversationHistory()
+			const messageAtIndex = apiHistory[conversationHistoryIndex]
+
+			console.log("🔍 Regeneration Request:", {
+				provider,
+				modelId,
+				conversationHistoryIndex,
+				currentMode,
+				apiHistoryLength: apiHistory.length,
+				messageAtIndex: messageAtIndex
+					? {
+							role: messageAtIndex.role,
+							contentType: Array.isArray(messageAtIndex.content) ? "array" : typeof messageAtIndex.content,
+							contentLength: Array.isArray(messageAtIndex.content) ? messageAtIndex.content.length : 0,
+						}
+					: "undefined",
+			})
+
+			// Validate the message exists and is a user message
+			if (!messageAtIndex) {
+				console.error("❌ No message at index:", conversationHistoryIndex)
+				return
+			}
+
+			if (messageAtIndex.role !== "user") {
+				console.error("❌ Message at index is not a user message:", {
+					index: conversationHistoryIndex,
+					actualRole: messageAtIndex.role,
+					expectedRole: "user",
+				})
+				return
+			}
+
+			// CRITICAL: Abort the current task first to prevent conflicts
+			// This prevents "Current ask promise was ignored" errors
+			console.log("⏸️  Aborting current task before regeneration...")
+			await this.task.abortTask()
+
+			// Wait for task cleanup
+			await new Promise((resolve) => setTimeout(resolve, 200))
+
+			// CRITICAL: Reset only the necessary task state for regeneration
+			// - abort: Must be false so task can proceed
+			// - askResponse: Clear any leftover response from aborted ask
+			// - lastMessageTs: DO NOT reset! This is needed for message flow
+			this.task.taskState.abort = false
+			this.task.taskState.askResponse = undefined
+			this.task.taskState.askResponseText = undefined
+			this.task.taskState.askResponseImages = undefined
+			this.task.taskState.askResponseFiles = undefined
+
+			console.log("✅ Task aborted and state reset, proceeding with regeneration...")
+
+			// Import the RegenerateFromPoint class
+			const { RegenerateFromPoint } = await import("@core/task/regenerate-from-point")
+
+			// Create regenerate handler
+			const regenerator = new RegenerateFromPoint(this.task.messageStateHandler, this.task.taskState, this.task.api)
+
+			// Check if we can regenerate from this point
+			if (!regenerator.canRegenerateFromPoint(conversationHistoryIndex)) {
+				// Debug: Show why we can't regenerate
+				const clineMessages = this.task.messageStateHandler.getClineMessages()
+				const apiReqMessages = clineMessages.filter((m) => m.say === "api_req_started")
+
+				console.error("❌ Cannot regenerate from this point:", conversationHistoryIndex)
+				console.error("Debug info:", {
+					requestedIndex: conversationHistoryIndex,
+					apiReqMessages: apiReqMessages.map((m) => ({
+						ts: m.ts,
+						conversationHistoryIndex: m.conversationHistoryIndex,
+						say: m.say,
+					})),
+					taskAborted: this.task.taskState.abort,
+					isRegenerating: this.task.taskState.isRegeneratingFromPoint,
+				})
+				return
+			}
+
+			// Perform the regeneration
+			const result = await regenerator.regenerateFromPoint({
+				modelId,
+				conversationHistoryIndex,
+				temporarySwitch: true, // Use temporary model switch for this request
+			})
+
+			if (result.success && result.messageToRegenerate) {
+				// Create a temporary API configuration with the new model
+				const tempApiConfig: ApiConfiguration = {
+					...currentApiConfig,
+				}
+
+				// Set the correct model field based on provider
+				if (provider === "openai-responses") {
+					// For OpenAI Responses API, use generic model ID fields
+					if (currentMode === "plan") {
+						tempApiConfig.planModeApiModelId = modelId
+					} else {
+						tempApiConfig.actModeApiModelId = modelId
+					}
+				} else if (provider === "openai") {
+					// For regular OpenAI, use OpenAI-specific model ID fields
+					if (currentMode === "plan") {
+						tempApiConfig.planModeOpenAiModelId = modelId
+					} else {
+						tempApiConfig.actModeOpenAiModelId = modelId
+					}
+				}
+
+				console.log("🔍 Temporary API Config:", {
+					provider,
+					currentMode,
+					modelIdSet:
+						provider === "openai-responses"
+							? currentMode === "plan"
+								? tempApiConfig.planModeApiModelId
+								: tempApiConfig.actModeApiModelId
+							: currentMode === "plan"
+								? tempApiConfig.planModeOpenAiModelId
+								: tempApiConfig.actModeOpenAiModelId,
+				})
+
+				// Re-create the task API handler with the new model
+				const tempApi = buildApiHandler(tempApiConfig, currentMode)
+
+				console.log("🔍 Temporary API Handler Created:", {
+					modelId: tempApi.getModel().id,
+					expectedModelId: modelId,
+					match: tempApi.getModel().id === modelId,
+				})
+
+				// Store the temporary API handler
+				this.task.taskState.temporaryApiHandler = tempApi
+
+				// Mark that we're regenerating from a point
+				this.task.taskState.isRegeneratingFromPoint = true
+				this.task.taskState.regenerationPoint = conversationHistoryIndex
+				this.task.taskState.regenerationModel = modelId
+
+				// Restart the task from the regeneration point
+				// Pass the extracted message to avoid accessing cleared history
+				console.log("🔄 Starting regeneration from point", conversationHistoryIndex, "with model", modelId)
+				await this.task.restartTaskFromPoint(conversationHistoryIndex, result.messageToRegenerate)
+				console.log("✅ Regeneration completed successfully")
+			} else {
+				console.error("❌ Regeneration failed:", result.error)
+			}
+		} catch (error) {
+			console.error("❌ Error handling regenerate from point:", error)
+		}
+	}
 
 	async updateTaskHistory(item: HistoryItem): Promise<HistoryItem[]> {
 		const history = this.cacheService.getGlobalStateKey("taskHistory")

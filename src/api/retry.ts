@@ -24,10 +24,20 @@ export function withRetry(options: RetryOptions = {}) {
 					yield* originalMethod.apply(this, args)
 					return
 				} catch (error: any) {
-					const isRateLimit = error?.status === 429
+					// CRITICAL FIX: Retry all transient network errors, not just rate limits
+					// This handles infrastructure issues (Cloudflare 502/503/504, network drops, etc.)
+					const isRetryableError =
+						error?.status === 429 || // Rate limit (existing)
+						error?.status === 502 || // Bad Gateway (Cloudflare/proxy issues)
+						error?.status === 503 || // Service Unavailable (server maintenance)
+						error?.status === 504 || // Gateway Timeout (upstream timeout)
+						error?.code === "ECONNRESET" || // Connection reset by peer
+						error?.code === "ETIMEDOUT" || // Request timeout
+						error?.message?.includes("fetch failed") // Generic fetch failures
+
 					const isLastAttempt = attempt === maxRetries - 1
 
-					if ((!isRateLimit && !retryAllErrors) || isLastAttempt) {
+					if ((!isRetryableError && !retryAllErrors) || isLastAttempt) {
 						throw error
 					}
 

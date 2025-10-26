@@ -55,6 +55,29 @@ export const MessageRenderer: React.FC<MessageRendererProps> = ({
 	const isLastMessageGroup = isNextCheckpoint && index === groupedMessages.length - 2
 	const isLast = index === groupedMessages.length - 1 || isLastMessageGroup
 
+	// Find the previous message for API response detection
+	const messageIndex = modifiedMessages.findIndex(msg => msg.ts === messageOrGroup.ts)
+	const previousMessage = messageIndex > 0 ? modifiedMessages[messageIndex - 1] : undefined
+
+	// CRITICAL FIX: Search backwards to find the most recent api_req_started
+	// The immediate previousMessage might be checkpoint_created or other intermediate messages
+	// We need to skip over those to find the actual API request that triggered this response
+	let apiRequestMessage: ClineMessage | undefined = undefined
+	if (messageIndex > 0) {
+		// Search backwards from current message
+		for (let i = messageIndex - 1; i >= 0; i--) {
+			const msg = modifiedMessages[i]
+			if (msg.say === "api_req_started") {
+				apiRequestMessage = msg
+				break
+			}
+			// Stop searching if we hit another text message (means we've gone too far back)
+			if (msg.say === "text" && !msg.partial) {
+				break
+			}
+		}
+	}
+
 	// Regular message
 	return (
 		<ChatRow
@@ -68,6 +91,8 @@ export const MessageRenderer: React.FC<MessageRendererProps> = ({
 			inputValue={inputValue}
 			sendMessageFromChatRow={messageHandlers.handleSendMessage}
 			onSetQuote={onSetQuote}
+			previousMessage={previousMessage}
+			apiRequestMessage={apiRequestMessage}
 		/>
 	)
 }

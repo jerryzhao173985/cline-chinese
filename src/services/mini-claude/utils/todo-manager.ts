@@ -198,7 +198,9 @@ export class TodoManager {
 	 * @returns Percentage of completed tasks (0-100)
 	 */
 	getCompletionPercentage(): number {
-		if (this.items.length === 0) return 0
+		if (this.items.length === 0) {
+			return 0
+		}
 		const completed = this.items.filter((item) => item.status === "completed").length
 		return Math.round((completed / this.items.length) * 100)
 	}

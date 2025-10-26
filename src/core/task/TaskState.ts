@@ -61,4 +61,10 @@ export class TaskState {
 
 	// Auto-context summarization
 	currentlySummarizing: boolean = false
+
+	// Model regeneration from specific points
+	isRegeneratingFromPoint: boolean = false
+	regenerationPoint?: number // conversationHistoryIndex
+	regenerationModel?: string // model ID to use for regeneration
+	temporaryApiHandler?: any // Temporary API handler for model switching
 }

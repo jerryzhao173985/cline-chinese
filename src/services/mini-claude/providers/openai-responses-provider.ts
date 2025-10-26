@@ -30,6 +30,9 @@ import {
 	ToolResultBlock,
 } from "../types/provider"
 import { SecureLogger } from "../security/security-utils"
+import { SimpleContextMonitor } from "../context/SimpleContextMonitor"
+import { ConversationCompressor } from "../context/ConversationCompressor"
+import { countTotalTokens } from "../utils/tokens"
 
 /**
  * OpenAI Responses API Provider
@@ -41,6 +44,10 @@ export class OpenAIResponsesProvider {
 	private lastResponseId?: string
 	private maxOutputTokens?: number
 	private temperature?: number
+	private contextMonitor: SimpleContextMonitor
+	private compressor: ConversationCompressor
+	private autoCompactEnabled: boolean
+	private isGeneratingSummary: boolean = false
 
 	/**
 	 * Model limits mapping
@@ -89,6 +96,25 @@ export class OpenAIResponsesProvider {
 		this.enableStatefulChaining = config.enableStatefulChaining ?? false
 		this.maxOutputTokens = config.maxOutputTokens
 		this.temperature = config.temperature ?? 1.0
+		this.autoCompactEnabled = config.autoCompactEnabled ?? true // Enable by default
+
+		// Initialize simple context monitor with model's context window
+		const modelLimits = this.getModelLimits()
+		this.contextMonitor = new SimpleContextMonitor({
+			contextWindow: modelLimits.contextWindow,
+			compressionThreshold: 0.95, // 95%
+			warningThreshold: 0.80, // 80% for UI warning
+		})
+
+		// Initialize conversation compressor
+		this.compressor = new ConversationCompressor()
+
+		SecureLogger.log("info", "OpenAI Responses Provider initialized with simple context management", {
+			model: this.model,
+			contextWindow: modelLimits.contextWindow,
+			compressionThreshold: "95%",
+			autoCompactEnabled: this.autoCompactEnabled,
+		})
 	}
 
 	/**
@@ -124,84 +150,54 @@ export class OpenAIResponsesProvider {
 	/**
 	 * Translate Cline messages to Responses API format
 	 *
-	 * Key differences:
-	 * - Responses API uses 'input' array (not 'messages')
-	 * - Assistant text becomes 'message' items with role='assistant'
-	 * - Tool uses become 'function_call' items
-	 * - Tool results become 'function_call_output' items
+	 * IMPORTANT: For Cline's XML tool system, we should NOT translate to function_call format
+	 * Instead, we keep everything as message items with clear context markers
+	 *
+	 * Key approach:
+	 * - All content stays as 'message' items
+	 * - Tool results are clearly marked in text
+	 * - XML tools remain embedded in assistant messages
 	 */
 	private translateMessagesToResponsesAPI(messages: Message[]): ResponsesAPIInputItem[] {
 		const inputMessages: ResponsesAPIInputItem[] = []
 
 		for (const msg of messages) {
-			if (msg.role === "assistant") {
-				// Extract text content and tool uses from assistant message
-				const content = Array.isArray(msg.content) ? msg.content : [{ type: "text", text: msg.content }]
+			// Convert all messages to simple message items with clear context
+			// This preserves Cline's XML tool format
+			const content = Array.isArray(msg.content) ? msg.content : [{ type: "text", text: msg.content }]
 
-				let textContent = ""
-				const toolUseBlocks: ToolUseBlock[] = []
+			let messageText = ""
 
-				for (const block of content) {
-					if (block.type === "text" && "text" in block) {
-						textContent += block.text
-					} else if (block.type === "tool_use") {
-						toolUseBlocks.push(block as ToolUseBlock)
+			for (const block of content) {
+				if (block.type === "text" && "text" in block) {
+					messageText += block.text
+				} else if (block.type === "tool_use") {
+					// Tool use: Keep as XML in text (Cline's format)
+					// This should already be in XML format from the assistant
+					const toolBlock = block as ToolUseBlock
+					messageText += `\n<${toolBlock.name}>\n`
+					for (const [key, value] of Object.entries(toolBlock.input || {})) {
+						messageText += `<${key}>${value}</${key}>\n`
 					}
-				}
-
-				// Add text as message item
-				if (textContent.trim()) {
-					inputMessages.push({
-						type: "message",
-						role: "assistant",
-						content: textContent.trim(),
-					})
-				}
-
-				// Add tool calls as function_call items
-				for (const toolUse of toolUseBlocks) {
-					inputMessages.push({
-						type: "function_call",
-						call_id: toolUse.id,
-						name: toolUse.name,
-						arguments: JSON.stringify(toolUse.input),
-					})
-				}
-			} else if (msg.role === "user") {
-				// Extract text content and tool results from user message
-				const content = Array.isArray(msg.content) ? msg.content : [{ type: "text", text: msg.content }]
-
-				let textContent = ""
-				const toolResultBlocks: ToolResultBlock[] = []
-
-				for (const block of content) {
-					if (block.type === "text" && "text" in block) {
-						textContent += block.text
-					} else if (block.type === "tool_result") {
-						toolResultBlocks.push(block as ToolResultBlock)
-					}
-				}
-
-				// Add text as message item
-				if (textContent.trim()) {
-					inputMessages.push({
-						type: "message",
-						role: "user",
-						content: textContent.trim(),
-					})
-				}
-
-				// Add tool results as function_call_output items
-				for (const toolResult of toolResultBlocks) {
+					messageText += `</${toolBlock.name}>\n`
+				} else if (block.type === "tool_result") {
+					// Tool result: Add with clear markers
+					const resultBlock = block as ToolResultBlock
 					const outputContent =
-						typeof toolResult.content === "string" ? toolResult.content : JSON.stringify(toolResult.content)
+						typeof resultBlock.content === "string" ? resultBlock.content : JSON.stringify(resultBlock.content)
 
-					inputMessages.push({
-						type: "function_call_output",
-						call_id: toolResult.tool_use_id,
-						output: outputContent,
-					})
+					// Add clear context so model understands this is a tool result
+					messageText += `\n[Tool Result]\n${outputContent}\n`
 				}
+			}
+
+			// Add as simple message item
+			if (messageText.trim()) {
+				inputMessages.push({
+					type: "message",
+					role: msg.role === "assistant" ? "assistant" : "user",
+					content: messageText.trim(),
+				})
 			}
 		}
 
@@ -210,6 +206,9 @@ export class OpenAIResponsesProvider {
 
 	/**
 	 * Translate Responses API output to Cline format
+	 *
+	 * Since we're using prompt-based XML tools, the response will contain
+	 * text with embedded XML tool calls that Cline will parse
 	 */
 	private translateResponseFromResponsesAPI(response: ResponsesAPIResponse): ProviderResponse {
 		const content: ContentBlock[] = []
@@ -225,32 +224,78 @@ export class OpenAIResponsesProvider {
 			)
 		}
 
+		// Import the actual tool names from Cline's definitions
+		// These are the exact tool names that parseAssistantMessageV2 looks for
+		const clineToolNames = [
+			"execute_command",
+			"read_file",
+			"write_to_file",
+			"replace_in_file",
+			"search_files",
+			"list_files",
+			"list_code_definition_names",
+			"browser_action",
+			"use_mcp_tool",
+			"access_mcp_resource",
+			"ask_followup_question",
+			"plan_mode_respond",
+			"load_mcp_documentation",
+			"attempt_completion",
+			"new_task",
+			"condense",
+			"summarize_task",
+			"report_bug",
+			"new_rule",
+			"web_fetch",
+		]
+
 		for (const item of response.output) {
 			if (item.type === "message" && item.content) {
-				// Text output
+				// Text output (which may contain XML tools)
+				// Check if the text contains any actual Cline tool opening tags
+				// We check for opening tags like <execute_command>, <read_file>, etc.
+				const containsToolUse = clineToolNames.some(toolName =>
+					item.content?.includes(`<${toolName}>`) ?? false
+				)
+
+				if (containsToolUse) {
+					// Contains actual Cline tool calls - parseAssistantMessageV2 will handle them
+					stopReason = "tool_use"
+					SecureLogger.log("info", "Detected tool use in response", {
+						detectedTools: clineToolNames.filter(name => item.content?.includes(`<${name}>`))
+					})
+				}
+
 				content.push({
 					type: "text",
 					text: item.content,
 				})
 			} else if (item.type === "function_call") {
-				// Tool use
-				stopReason = "tool_use"
+				// We shouldn't get this since we're not using API function calling
+				// But handle it just in case
+				SecureLogger.log("warn", "Unexpected function_call in response - converting to text", {
+					item: JSON.stringify(item),
+				})
 
-				let parsedInput: Record<string, any> = {}
+				// Convert to text representation
+				let toolText = `<${item.name || "unknown"}>\n`
 				if (item.arguments) {
 					try {
-						parsedInput = JSON.parse(item.arguments)
+						const args = JSON.parse(item.arguments)
+						for (const [key, value] of Object.entries(args)) {
+							toolText += `<${key}>${value}</${key}>\n`
+						}
 					} catch (error) {
 						console.error("Failed to parse tool arguments:", error)
 					}
 				}
+				toolText += `</${item.name || "unknown"}>`
 
 				content.push({
-					type: "tool_use",
-					id: item.call_id || `call_${Date.now()}`,
-					name: item.name || "unknown",
-					input: parsedInput,
+					type: "text",
+					text: toolText,
 				})
+				stopReason = "tool_use"
 			}
 		}
 
@@ -306,6 +351,104 @@ export class OpenAIResponsesProvider {
 	 * 7. Async responses with polling for long-running requests
 	 */
 	async createMessage(params: MessageParams): Promise<ProviderResponse> {
+		try {
+			// 1. CONTEXT MONITORING: Check current context usage
+			const stats = this.contextMonitor.getStats(params.messages)
+
+			SecureLogger.log("info", "Context window status", {
+				zone: stats.zone,
+				percentage: `${stats.percentage.toFixed(1)}%`,
+				tokens: stats.tokens,
+				limit: stats.limit,
+				remaining: stats.remaining,
+				messageCount: params.messages.length,
+			})
+
+			// 2. AUTO-COMPACT: Compress if approaching limit (95%)
+			// Skip if already generating summary (prevent infinite recursion)
+			let managedMessages = params.messages
+			if (this.autoCompactEnabled && stats.shouldCompress && !this.isGeneratingSummary) {
+				SecureLogger.log("info", "🗜️ Auto-compact triggered", {
+					percentage: `${stats.percentage.toFixed(1)}%`,
+					tokens: stats.tokens,
+					threshold: `${this.contextMonitor.getCompressionThreshold() * 100}%`,
+				})
+
+				// Generate compression prompt
+				const compressionPrompt = this.compressor.generateCompressionPrompt(params.messages)
+
+				// Call LLM to generate summary (with protection flag)
+				SecureLogger.log("info", "Generating conversation summary...")
+				const summaryMessages = [...params.messages, compressionPrompt]
+
+				// Set flag to prevent re-compression during summary generation
+				this.isGeneratingSummary = true
+				try {
+					const summaryResponse = await this.createMessageInternal({
+						...params,
+						messages: summaryMessages,
+						tools: undefined, // No tools for summary generation
+					})
+
+					// Extract summary text from response
+					const summaryText = summaryResponse.content
+						.filter((block) => block.type === "text")
+						.map((block) => (block as any).text)
+						.join("\n")
+
+					// Get token counts
+					const tokensBefore = countTotalTokens(params.messages)
+
+					// Create compressed messages
+					const compressionResult = this.compressor.createCompressedMessages(
+						params.messages,
+						summaryText,
+						tokensBefore,
+						0, // Will calculate after
+					)
+
+					// Calculate actual tokens after compression
+					const tokensAfter = countTotalTokens(compressionResult.messages)
+					compressionResult.stats.tokensAfter = tokensAfter
+					compressionResult.stats.tokensSaved = tokensBefore - tokensAfter
+
+					managedMessages = compressionResult.messages
+
+					// Reset stateful chaining (new conversation context)
+					this.lastResponseId = undefined
+
+					SecureLogger.log("info", "✅ Auto-compact complete", {
+						messagesBefore: compressionResult.stats.messagesBefore,
+						messagesAfter: compressionResult.stats.messagesAfter,
+						tokensBefore: compressionResult.stats.tokensBefore,
+						tokensAfter: compressionResult.stats.tokensAfter,
+						tokensSaved: compressionResult.stats.tokensSaved,
+						percentSaved: `${Math.round((compressionResult.stats.tokensSaved / tokensBefore) * 100)}%`,
+					})
+				} finally {
+					// Always reset flag, even if compression fails
+					this.isGeneratingSummary = false
+				}
+			}
+
+			// 3. Create actual message with managed context
+			return await this.createMessageInternal({
+				...params,
+				messages: managedMessages,
+			})
+		} catch (error: any) {
+			SecureLogger.log("error", "Failed to create message with Responses API", {
+				error: error.message,
+				model: this.model,
+			})
+			throw error
+		}
+	}
+
+	/**
+	 * Internal message creation (extracted to support compression)
+	 */
+	private async createMessageInternal(params: MessageParams): Promise<ProviderResponse> {
 		try {
 			// 1. Translate messages to Responses API format
 			const inputMessages = this.translateMessagesToResponsesAPI(params.messages)
@@ -410,17 +553,17 @@ export class OpenAIResponsesProvider {
 
 			let response: any = await initialResponse.json()
 
-			// 8. Validate response structure
+			// 9. Validate response structure
 			if (response.error) {
 				throw new Error(`OpenAI Responses API error: ${response.error.message || JSON.stringify(response.error)}`)
 			}
 
-			// 9. Store response ID for stateful chaining
+			// 10. Store response ID for stateful chaining
 			if (this.enableStatefulChaining && response.id) {
 				this.lastResponseId = response.id
 			}
 
-			// 10. Poll for async responses
+			// 11. Poll for async responses
 			while (response.status === "queued" || response.status === "in_progress") {
 				SecureLogger.log("info", `Response status: ${response.status}, waiting...`)
 				await this.sleep(2000)
@@ -444,13 +587,13 @@ export class OpenAIResponsesProvider {
 				}
 			}
 
-			// 11. Handle failed responses
+			// 12. Handle failed responses
 			if (response.status === "failed") {
 				const errorMessage = response.error?.message || "Response generation failed"
 				throw new Error(`OpenAI Responses API error: ${errorMessage}`)
 			}
 
-			// 12. Validate response before translation
+			// 13. Validate response before translation
 			if (!response.output || !Array.isArray(response.output)) {
 				SecureLogger.log("error", "Invalid response structure from OpenAI Responses API", {
 					response: JSON.stringify(response),
@@ -460,7 +603,7 @@ export class OpenAIResponsesProvider {
 				)
 			}
 
-			// 12.5. Check for empty output (common with stateful chaining errors)
+			// 13.5. Check for empty output (common with stateful chaining errors)
 			if (response.output.length === 0) {
 				SecureLogger.log("error", "Empty output from OpenAI Responses API", {
 					response: JSON.stringify(response),
@@ -471,10 +614,10 @@ export class OpenAIResponsesProvider {
 				)
 			}
 
-			// 13. Translate response back to Cline format
+			// 14. Translate response back to Cline format
 			const translated = this.translateResponseFromResponsesAPI(response as ResponsesAPIResponse)
 
-			// 13.5. Validate translated content is not empty
+			// 14.5. Validate translated content is not empty
 			if (
 				translated.content.length === 0 ||
 				(translated.content.length === 1 && translated.content[0].type === "text" && !translated.content[0].text)
@@ -483,14 +626,41 @@ export class OpenAIResponsesProvider {
 					response: JSON.stringify(response),
 					translated: JSON.stringify(translated),
 					previousResponseId: this.lastResponseId,
+					messagesCount: requestParams.input.length,
 				})
 
-				// Reset stateful chaining on empty response
+				// Detailed diagnostic logging
+				SecureLogger.log("error", "Empty response diagnostics", {
+					possibleCauses: [
+						"Model confused by conversation flow",
+						"Stateful chaining chain break",
+						"Model doesn't understand prompt/tools",
+						"Context window issue (check stats)",
+						"Model reasoning mode incompatibility",
+					],
+					modelUsed: this.model,
+					statefulChainingEnabled: this.enableStatefulChaining,
+					wasUsingChaining: !!this.lastResponseId,
+				})
+
+				// Reset stateful chaining on empty response (auto-recovery)
+				const hadStatefulChaining = !!this.lastResponseId
 				this.lastResponseId = undefined
 
-				throw new Error(
-					`Empty response from model. This may indicate context window limit or API error. Stateful chaining has been reset. Please try again.`,
-				)
+				const errorMessage = hadStatefulChaining
+					? `Empty response from model. Stateful chaining has been automatically reset for recovery.\n\n` +
+						`Possible causes:\n` +
+						`1. Model confused by stateful conversation chain\n` +
+						`2. Model doesn't understand tool format (expecting XML)\n` +
+						`3. Model reasoning mode incompatibility\n\n` +
+						`The next request will start fresh without chaining. Please try again.`
+					: `Empty response from model. This may indicate:\n` +
+						`1. Context window limit (check stats)\n` +
+						`2. Model doesn't understand prompt/tools\n` +
+						`3. API error or model malfunction\n\n` +
+						`Please try again or consider using a different model.`
+
+				throw new Error(errorMessage)
 			}
 
 			return translated
@@ -533,15 +703,82 @@ export class OpenAIResponsesProvider {
 	}
 
 	/**
-	 * Count tokens in messages (simple estimation)
+	 * Count tokens in messages
 	 */
 	countTokens(messages: Message[]): number {
-		let total = 0
-		for (const message of messages) {
-			const content = typeof message.content === "string" ? message.content : JSON.stringify(message.content)
-			// Simple estimation: ~4 chars per token
-			total += Math.ceil(content.length / 4)
+		return countTotalTokens(messages)
+	}
+
+	/**
+	 * Get current context statistics
+	 */
+	getContextStats(messages: Message[]) {
+		return this.contextMonitor.getStats(messages)
+	}
+
+	/**
+	 * Enable or disable auto-compact
+	 */
+	setAutoCompact(enabled: boolean): void {
+		this.autoCompactEnabled = enabled
+		SecureLogger.log("info", `Auto-compact ${enabled ? "enabled" : "disabled"}`)
+	}
+
+	/**
+	 * Get auto-compact status
+	 */
+	isAutoCompactEnabled(): boolean {
+		return this.autoCompactEnabled
+	}
+
+	/**
+	 * Manually trigger compression (for user-initiated compact)
+	 */
+	async manualCompact(messages: Message[], params: MessageParams): Promise<Message[]> {
+		SecureLogger.log("info", "🗜️ Manual compact triggered by user")
+
+		// Set protection flag to prevent re-compression
+		this.isGeneratingSummary = true
+
+		try {
+			// Generate compression prompt
+			const compressionPrompt = this.compressor.generateCompressionPrompt(messages)
+
+			// Call LLM to generate summary
+			const summaryMessages = [...messages, compressionPrompt]
+			const summaryResponse = await this.createMessageInternal({
+				...params,
+				messages: summaryMessages,
+				tools: undefined,
+			})
+
+			// Extract summary
+			const summaryText = summaryResponse.content
+				.filter((block) => block.type === "text")
+				.map((block) => (block as any).text)
+				.join("\n")
+
+			// Create compressed messages
+			const tokensBefore = countTotalTokens(messages)
+			const compressionResult = this.compressor.createCompressedMessages(messages, summaryText, tokensBefore, 0)
+
+			// Calculate actual tokens
+			const tokensAfter = countTotalTokens(compressionResult.messages)
+			compressionResult.stats.tokensAfter = tokensAfter
+			compressionResult.stats.tokensSaved = tokensBefore - tokensAfter
+
+			// Reset stateful chaining
+			this.lastResponseId = undefined
+
+			SecureLogger.log("info", "✅ Manual compact complete", {
+				tokensSaved: compressionResult.stats.tokensSaved,
+				percentSaved: `${Math.round((compressionResult.stats.tokensSaved / tokensBefore) * 100)}%`,
+			})
+
+			return compressionResult.messages
+		} finally {
+			// Always reset flag, even if compression fails
+			this.isGeneratingSummary = false
 		}
-		return total
 	}
 }

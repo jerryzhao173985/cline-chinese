@@ -2229,6 +2229,11 @@ export class Task {
 			text: JSON.stringify({
 				request: userContent.map((block) => formatContentBlockToMarkdown(block)).join("\n\n"),
 			} satisfies ClineApiReqInfo),
+			// CRITICAL FIX: Update conversationHistoryIndex to point to the user message we just added
+			// The placeholder api_req_started was created BEFORE the user message was added to apiHistory,
+			// so its conversationHistoryIndex pointed to the wrong message (previous assistant message).
+			// Now we update it to point to the correct user message at apiHistory.length - 1
+			conversationHistoryIndex: this.messageStateHandler.getApiConversationHistory().length - 1,
 		})
 		await this.postStateToWebview()
 
@@ -2814,5 +2819,72 @@ export class Task {
 		}
 
 		return `<environment_details>\n${details.trim()}\n</environment_details>`
+	}
+
+	/**
+	 * Restart the task from a specific conversation history point
+	 * Used for regenerating responses with a different model
+	 */
+	async restartTaskFromPoint(conversationHistoryIndex: number, messageToRegenerate: Anthropic.MessageParam) {
+		try {
+			// CRITICAL: Clear the abort flag that was set when we aborted the task
+			// Without this, the task will immediately fail with "Current ask promise was ignored"
+			this.taskState.abort = false
+
+			// Use the temporary API handler if we're regenerating
+			const apiToUse = this.taskState.isRegeneratingFromPoint && this.taskState.temporaryApiHandler
+				? this.taskState.temporaryApiHandler
+				: this.api
+
+			// Validate the message to regenerate
+			if (!messageToRegenerate || messageToRegenerate.role !== "user") {
+				throw new Error("Expected user message at regeneration point")
+			}
+
+			// Clear any pending user message content and reset state
+			this.taskState.userMessageContent = []
+			this.taskState.userMessageContentReady = false
+			this.taskState.askResponse = undefined
+			this.taskState.askResponseText = undefined
+			this.taskState.askResponseImages = undefined
+
+			// Temporarily replace the API handler
+			const originalApi = this.api
+			this.api = apiToUse
+
+			// Extract the user content from the message to regenerate
+			const userContent = messageToRegenerate.content as (Anthropic.TextBlockParam | Anthropic.ImageBlockParam)[]
+
+			// Make the API request with the new model
+			// This will add the user message to history and then make the API call
+			await this.recursivelyMakeClineRequests(userContent, false)
+
+			// Restore the original API handler
+			this.api = originalApi
+
+			// Reset the regeneration state after completion
+			this.taskState.isRegeneratingFromPoint = false
+			this.taskState.regenerationPoint = undefined
+			this.taskState.regenerationModel = undefined
+			this.taskState.temporaryApiHandler = undefined
+
+		} catch (error) {
+			console.error("❌ Error restarting task from point:", error)
+
+			// Clear abort flag before trying to show error message
+			this.taskState.abort = false
+
+			try {
+				await this.say("error", `无法从指定点重新开始任务: ${error instanceof Error ? error.message : String(error)}`)
+			} catch (sayError) {
+				console.error("❌ Failed to show error message:", sayError)
+			}
+
+			// Reset regeneration state on error
+			this.taskState.isRegeneratingFromPoint = false
+			this.taskState.regenerationPoint = undefined
+			this.taskState.regenerationModel = undefined
+			this.taskState.temporaryApiHandler = undefined
+		}
 	}
 }

@@ -174,14 +174,17 @@ export class OpenAiResponsesHandler implements ApiHandler {
 	}
 
 	/**
-	 * Convert Anthropic messages to text-only format for Responses API
+	 * Convert Anthropic messages to properly structured format for Responses API
 	 *
-	 * This is CRITICAL for Cline compatibility:
+	 * CRITICAL for Cline compatibility:
 	 * - Cline uses XML-based tools in text (e.g., <read_file><path>...</path></read_file>)
-	 * - Tool results come back as text content, not function_call_output
-	 * - This avoids call_id mismatches that break the conversation
+	 * - Tool results must be preserved with clear context
+	 * - Messages must maintain structure for model comprehension
+	 *
+	 * The previous text-only conversion was causing garbled model output
+	 * because it destroyed message structure and context.
 	 */
-	private convertAnthropicToTextOnly(messages: Anthropic.Messages.MessageParam[]): any[] {
+	private convertAnthropicToProperFormat(messages: Anthropic.Messages.MessageParam[]): any[] {
 		return messages.map((msg) => {
 			if (typeof msg.content === "string") {
 				return {
@@ -190,33 +193,34 @@ export class OpenAiResponsesHandler implements ApiHandler {
 				}
 			}
 
-			// Combine all content blocks into a single text string
-			let textContent = ""
+			// Build structured content preserving context
+			let structuredContent = ""
 
 			for (const block of msg.content) {
 				if (block.type === "text") {
-					textContent += block.text + "\n"
+					// Preserve text as-is
+					structuredContent += block.text
 				} else if (block.type === "image") {
-					// Images: convert to text description
-					textContent += "[Image content]\n"
+					// Mark images clearly
+					structuredContent += "\n[Image provided by user]\n"
 				} else if (block.type === "tool_use") {
 					// Tool use: This shouldn't happen in our flow since we output XML as text
 					// But if it does, convert to XML format
 					const xmlTool = this.convertToolUseToXML(block)
-					textContent += xmlTool + "\n"
+					structuredContent += xmlTool
 				} else if (block.type === "tool_result") {
-					// Tool result: Convert to plain text (CRITICAL!)
-					// Format: [Tool: tool_name] Result: <result content>
+					// Tool result: Preserve with clear context markers
+					// This is CRITICAL - tool results must be clearly labeled
 					const resultContent = typeof block.content === "string" ? block.content : JSON.stringify(block.content)
 
-					// Add the result as plain text
-					textContent += resultContent + "\n"
+					// Add clear context markers so model understands this is a tool result
+					structuredContent += `\n[Tool Result]\n${resultContent}\n`
 				}
 			}
 
 			return {
 				role: msg.role,
-				content: textContent.trim(),
+				content: structuredContent.trim(),
 			}
 		})
 	}
@@ -271,9 +275,9 @@ export class OpenAiResponsesHandler implements ApiHandler {
 		const provider = this.ensureProvider()
 
 		try {
-			// Convert messages to mini-claude format
-			// This includes converting tool results to plain text (not function_call_output)
-			const miniClaudeMessages = this.convertAnthropicToTextOnly(messages)
+			// Convert messages to properly structured format
+			// This preserves message structure and context for better model comprehension
+			const miniClaudeMessages = this.convertAnthropicToProperFormat(messages)
 
 			// DEBUG: Log what we're sending
 			console.log("=== OpenAI Responses API Request ===")
@@ -324,7 +328,8 @@ export class OpenAiResponsesHandler implements ApiHandler {
 					} else if (Array.isArray(rawText)) {
 						// Array of output_text objects (OpenAI Responses API format)
 						for (const item of rawText) {
-							if (item?.type === "output_text" && item?.text) {
+							if (item?.type === "output_text" && item?.text !== undefined) {
+								// Include even if empty string - important for error detection
 								textContent += item.text
 							}
 						}
@@ -333,11 +338,58 @@ export class OpenAiResponsesHandler implements ApiHandler {
 						textContent = JSON.stringify(rawText)
 					}
 
-					console.log("Extracted text (first 200 chars):", textContent.substring(0, 200))
+					// Validate and log extraction result
+					if (textContent === "") {
+						console.warn("⚠️ Model returned empty text!")
+						console.warn("Possible causes:")
+						console.warn("  1. Model confused by conversation flow")
+						console.warn("  2. Stateful chaining chain break")
+						console.warn("  3. Model doesn't understand prompt/tools")
+						console.warn("  4. Model chose not to respond")
+					}
 
-					yield {
-						type: "text",
-						text: textContent,
+					// Detect garbled output patterns (signs of model confusion)
+					const garbledPatterns = [
+						/truncated due to \w+/i,
+						/net cunning/i,
+						/partial due to lumps/i,
+						/maybe restful/i,
+						/glimpsed/i,
+						/adhesives/i,
+						/sedation/i,
+						/intangible/i,
+						/autop/i,
+						/doping/i,
+					]
+
+					const isGarbled = garbledPatterns.some(pattern => pattern.test(textContent))
+
+					if (isGarbled) {
+						console.error("⚠️ DETECTED GARBLED OUTPUT - Model appears confused!")
+						console.error("Raw content:", textContent.substring(0, 500))
+						console.error("This typically indicates:")
+						console.error("  1. Message format corruption")
+						console.error("  2. Context window issues")
+						console.error("  3. Model compatibility problems")
+
+						// Try to recover by resetting stateful chaining
+						if (this.provider) {
+							console.log("Attempting recovery by resetting stateful chaining...")
+							this.provider.resetStatefulChaining()
+						}
+
+						// Return error message instead of garbled content
+						yield {
+							type: "text",
+							text: "[Error: Model returned garbled output. This often happens when the conversation context is corrupted. Please try starting a new task or clearing the conversation history.]",
+						}
+					} else {
+						console.log("Extracted text (first 200 chars):", textContent.substring(0, 200))
+
+						yield {
+							type: "text",
+							text: textContent,
+						}
 					}
 				}
 				// Note: We shouldn't get tool_use blocks since we didn't pass tools

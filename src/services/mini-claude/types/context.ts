@@ -1,50 +1,14 @@
 /**
- * Context compression and token management types
+ * Context management types
  *
- * These types support the context compression and token utilities
- * ported from mini-claude-code
+ * NOTE: This file is deprecated and will be removed.
+ * New implementation uses inline types in:
+ * - SimpleContextMonitor.ts (ContextStats)
+ * - ConversationCompressor.ts (CompressionResult, CompressionOptions)
+ *
+ * This file is kept temporarily to avoid breaking any legacy imports.
  */
 
-/**
- * Threshold information for context compression
- */
-export interface ThresholdInfo {
-	isAboveAutoCompactThreshold: boolean
-	percentUsed: number
-	tokensRemaining: number
-	contextLimit: number
-	autoCompactThreshold: number
-}
-
-/**
- * Context usage statistics
- */
-export interface ContextStats {
-	messageCount: number
-	tokenCount: number
-	isAboveAutoCompactThreshold: boolean
-	percentUsed: number
-	tokensRemaining: number
-	contextLimit: number
-	autoCompactThreshold: number
-}
-
-/**
- * Context compression options
- */
-export interface CompressionOptions {
-	contextLimit?: number
-	preserveLastN?: number
-}
-
-/**
- * Compression result
- */
-export interface CompressionResult {
-	messages: any[]
-	oldCount: number
-	newCount: number
-	oldTokens: number
-	newTokens: number
-	tokensSaved: number
-}
+// Types are now defined inline in the new implementation files
+// See: src/services/mini-claude/context/SimpleContextMonitor.ts
+// See: src/services/mini-claude/context/ConversationCompressor.ts

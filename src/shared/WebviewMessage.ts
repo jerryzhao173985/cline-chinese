@@ -1,7 +1,11 @@
 export interface WebviewMessage {
-	type: "grpc_request" | "grpc_request_cancel"
+	type: "grpc_request" | "grpc_request_cancel" | "regenerateFromPoint"
 	grpc_request?: GrpcRequest
 	grpc_request_cancel?: GrpcCancel
+	regenerateFromPoint?: {
+		modelId: string
+		conversationHistoryIndex: number
+	}
 }
 
 export type GrpcRequest = {

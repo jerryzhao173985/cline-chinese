@@ -210,6 +210,15 @@ export class VscodeWebviewProvider extends WebviewProvider implements vscode.Web
 				}
 				break
 			}
+			case "regenerateFromPoint": {
+				if (message.regenerateFromPoint) {
+					await this.controller.handleRegenerateFromPoint(
+						message.regenerateFromPoint.modelId,
+						message.regenerateFromPoint.conversationHistoryIndex,
+					)
+				}
+				break
+			}
 			default: {
 				console.error("Received unhandled WebviewMessage type:", JSON.stringify(message))
 			}
