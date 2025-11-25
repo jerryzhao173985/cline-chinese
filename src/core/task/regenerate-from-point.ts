@@ -20,29 +20,25 @@ export class RegenerateFromPoint {
 	private messageStateHandler: MessageStateHandler
 	private taskState: TaskState
 	private originalApiHandler: ApiHandler
-	private clineMessages: ClineMessage[]
-	private apiConversationHistory: Anthropic.MessageParam[]
+	// NOTE: We intentionally do NOT store array snapshots here.
+	// Always get fresh arrays from messageStateHandler when needed.
+	// This ensures we always work with the current state, not stale references.
 
-	constructor(
-		messageStateHandler: MessageStateHandler,
-		taskState: TaskState,
-		apiHandler: ApiHandler
-	) {
+	constructor(messageStateHandler: MessageStateHandler, taskState: TaskState, apiHandler: ApiHandler) {
 		this.messageStateHandler = messageStateHandler
 		this.taskState = taskState
 		this.originalApiHandler = apiHandler
-		this.clineMessages = messageStateHandler.getClineMessages()
-		this.apiConversationHistory = messageStateHandler.getApiConversationHistory()
 	}
 
 	/**
 	 * Find the ClineMessage that corresponds to a specific API request
 	 */
 	findApiRequestMessage(conversationHistoryIndex: number): ClineMessage | undefined {
+		// Get fresh array from messageStateHandler
+		const clineMessages = this.messageStateHandler.getClineMessages()
 		// Find the message with matching conversationHistoryIndex and api_req_started
-		return this.clineMessages.find(
-			msg => msg.conversationHistoryIndex === conversationHistoryIndex &&
-			       msg.say === "api_req_started"
+		return clineMessages.find(
+			(msg) => msg.conversationHistoryIndex === conversationHistoryIndex && msg.say === "api_req_started",
 		)
 	}
 
@@ -53,23 +49,27 @@ export class RegenerateFromPoint {
 		clineMessages: ClineMessage[]
 		apiConversationHistory: Anthropic.MessageParam[]
 	} {
+		// Get fresh arrays from messageStateHandler
+		const clineMessages = this.messageStateHandler.getClineMessages()
+		const apiConversationHistory = this.messageStateHandler.getApiConversationHistory()
+
 		// Get all ClineMessages up to this point
 		const apiReqMessage = this.findApiRequestMessage(conversationHistoryIndex)
 		if (!apiReqMessage) {
 			throw new Error(`No API request found at conversation history index ${conversationHistoryIndex}`)
 		}
 
-		const messageIndex = this.clineMessages.indexOf(apiReqMessage)
-		const clineMessagesUpToPoint = this.clineMessages.slice(0, messageIndex + 1)
+		const messageIndex = clineMessages.indexOf(apiReqMessage)
+		const clineMessagesUpToPoint = clineMessages.slice(0, messageIndex + 1)
 
 		// Get API conversation history up to this point
 		// Note: conversationHistoryIndex points to the user message,
 		// so we need to include it but exclude the assistant response
-		const apiConversationUpToPoint = this.apiConversationHistory.slice(0, conversationHistoryIndex + 1)
+		const apiConversationUpToPoint = apiConversationHistory.slice(0, conversationHistoryIndex + 1)
 
 		return {
 			clineMessages: clineMessagesUpToPoint,
-			apiConversationHistory: apiConversationUpToPoint
+			apiConversationHistory: apiConversationUpToPoint,
 		}
 	}
 
@@ -77,21 +77,25 @@ export class RegenerateFromPoint {
 	 * Clear messages after a specific point
 	 */
 	async clearMessagesAfterPoint(conversationHistoryIndex: number): Promise<void> {
+		// Get fresh arrays from messageStateHandler
+		const clineMessages = this.messageStateHandler.getClineMessages()
+		const apiConversationHistory = this.messageStateHandler.getApiConversationHistory()
+
 		const apiReqMessage = this.findApiRequestMessage(conversationHistoryIndex)
 		if (!apiReqMessage) {
 			throw new Error(`No API request found at conversation history index ${conversationHistoryIndex}`)
 		}
 
-		const messageIndex = this.clineMessages.indexOf(apiReqMessage)
+		const messageIndex = clineMessages.indexOf(apiReqMessage)
 
 		// Keep Cline messages BEFORE the api_req_started message (not including it)
 		// The regeneration will create a new api_req_started placeholder
 		// If we keep the old one, we'll have duplicates in the UI
-		const newClineMessages = this.clineMessages.slice(0, messageIndex)
+		const newClineMessages = clineMessages.slice(0, messageIndex)
 
 		// Keep API history BEFORE the regeneration point (not including the user message at that index)
 		// because restartTaskFromPoint will call recursivelyMakeClineRequests which adds it again
-		const newApiHistory = this.apiConversationHistory.slice(0, conversationHistoryIndex)
+		const newApiHistory = apiConversationHistory.slice(0, conversationHistoryIndex)
 
 		// Update the message state
 		await this.messageStateHandler.overwriteClineMessages(newClineMessages)
@@ -126,6 +130,7 @@ export class RegenerateFromPoint {
 		success: boolean
 		error?: string
 		messageToRegenerate?: Anthropic.MessageParam
+		preservedTimestamp?: number
 	}> {
 		try {
 			const { modelId, conversationHistoryIndex, temporarySwitch = true } = options
@@ -135,48 +140,55 @@ export class RegenerateFromPoint {
 			if (!apiReqMessage) {
 				return {
 					success: false,
-					error: `Cannot find API request at index ${conversationHistoryIndex}`
+					error: `Cannot find API request at index ${conversationHistoryIndex}`,
 				}
 			}
 
-			// 2. CRITICAL: Extract the message to regenerate BEFORE clearing
+			// 2. CRITICAL: Preserve the timestamp from the old api_req_started message
+			// We'll reuse this timestamp for the new message so React sees it as an update, not a new message
+			// This prevents the duplicate spinner bug where both old and new messages appear
+			const preservedTimestamp = apiReqMessage.ts
+
+			// 3. CRITICAL: Extract the message to regenerate BEFORE clearing
 			// This is the user message at conversationHistoryIndex that we need to resend
-			const messageToRegenerate = this.apiConversationHistory[conversationHistoryIndex]
+			// Get fresh array from messageStateHandler
+			const apiConversationHistory = this.messageStateHandler.getApiConversationHistory()
+			const messageToRegenerate = apiConversationHistory[conversationHistoryIndex]
 			if (!messageToRegenerate || messageToRegenerate.role !== "user") {
 				return {
 					success: false,
-					error: `Expected user message at conversation history index ${conversationHistoryIndex}`
+					error: `Expected user message at conversation history index ${conversationHistoryIndex}`,
 				}
 			}
 
-			// 3. Clear messages after this point (this will delete messageToRegenerate from history)
+			// 4. Clear messages after this point (this will delete messageToRegenerate from history)
 			await this.clearMessagesAfterPoint(conversationHistoryIndex)
 
-			// 4. Create temporary API handler if needed
+			// 5. Create temporary API handler if needed
 			let apiHandlerToUse = this.originalApiHandler
 			if (temporarySwitch && modelId !== this.originalApiHandler.getModel().id) {
 				apiHandlerToUse = await this.createTemporaryApiHandler(modelId)
 			}
 
-			// 5. Update task state to indicate regeneration
+			// 6. Update task state to indicate regeneration
 			this.taskState.isRegeneratingFromPoint = true
 			this.taskState.regenerationPoint = conversationHistoryIndex
 			this.taskState.regenerationModel = modelId
 
-			// 6. Return the prepared state with the extracted message
+			// 7. Return the prepared state with the extracted message and preserved timestamp
 			return {
 				success: true,
-				messageToRegenerate: messageToRegenerate
+				messageToRegenerate: messageToRegenerate,
+				preservedTimestamp: preservedTimestamp,
 			}
 
 			// The actual regeneration will be handled by the main task loop
 			// which will use the cleared message history and the extracted message
-
 		} catch (error) {
 			console.error("Error regenerating from point:", error)
 			return {
 				success: false,
-				error: error instanceof Error ? error.message : String(error)
+				error: error instanceof Error ? error.message : String(error),
 			}
 		}
 	}
@@ -191,6 +203,9 @@ export class RegenerateFromPoint {
 		cost?: number
 		model?: string
 	}> {
+		// Get fresh array from messageStateHandler
+		const clineMessages = this.messageStateHandler.getClineMessages()
+
 		const points: Array<{
 			index: number
 			conversationHistoryIndex: number
@@ -199,7 +214,7 @@ export class RegenerateFromPoint {
 			model?: string
 		}> = []
 
-		this.clineMessages.forEach((msg, index) => {
+		clineMessages.forEach((msg, index) => {
 			if (msg.say === "api_req_started" && msg.conversationHistoryIndex !== undefined) {
 				let cost: number | undefined
 				let model: string | undefined
@@ -219,7 +234,7 @@ export class RegenerateFromPoint {
 					conversationHistoryIndex: msg.conversationHistoryIndex,
 					timestamp: msg.ts,
 					cost,
-					model
+					model,
 				})
 			}
 		})

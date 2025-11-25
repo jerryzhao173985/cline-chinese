@@ -167,31 +167,38 @@ export const ChatRowContent = memo(
 		})
 
 		// Handle model regeneration
-		const handleRegenerate = useCallback((modelId: string, conversationHistoryIndex: number) => {
-			console.log("🔄 [UI] Regenerate requested:", {
-				modelId,
-				conversationHistoryIndex,
-				apiRequestMessage: apiRequestMessage ? {
-					say: apiRequestMessage.say,
-					conversationHistoryIndex: apiRequestMessage.conversationHistoryIndex,
-					ts: apiRequestMessage.ts
-				} : 'none',
-				previousMessage: previousMessage ? {
-					say: previousMessage.say,
-					conversationHistoryIndex: previousMessage.conversationHistoryIndex,
-					ts: previousMessage.ts
-				} : 'none'
-			})
-
-			// Send message to extension to regenerate from this point with new model
-			vscode.postMessage({
-				type: "regenerateFromPoint",
-				regenerateFromPoint: {
+		const handleRegenerate = useCallback(
+			(modelId: string, conversationHistoryIndex: number) => {
+				console.log("🔄 [UI] Regenerate requested:", {
 					modelId,
-					conversationHistoryIndex
-				}
-			})
-		}, [apiRequestMessage, previousMessage])
+					conversationHistoryIndex,
+					apiRequestMessage: apiRequestMessage
+						? {
+								say: apiRequestMessage.say,
+								conversationHistoryIndex: apiRequestMessage.conversationHistoryIndex,
+								ts: apiRequestMessage.ts,
+							}
+						: "none",
+					previousMessage: previousMessage
+						? {
+								say: previousMessage.say,
+								conversationHistoryIndex: previousMessage.conversationHistoryIndex,
+								ts: previousMessage.ts,
+							}
+						: "none",
+				})
+
+				// Send message to extension to regenerate from this point with new model
+				vscode.postMessage({
+					type: "regenerateFromPoint",
+					regenerateFromPoint: {
+						modelId,
+						conversationHistoryIndex,
+					},
+				})
+			},
+			[apiRequestMessage, previousMessage],
+		)
 		const contentRef = useRef<HTMLDivElement>(null)
 		const [cost, apiReqCancelReason, apiReqStreamingFailedMessage, retryStatus] = useMemo(() => {
 			if (message.text != null && message.say === "api_req_started") {
@@ -1025,7 +1032,8 @@ export const ChatRowContent = memo(
 						)
 					case "text":
 						// Model switcher for OpenAI Responses API only
-						const provider = mode === "plan" ? apiConfiguration?.planModeApiProvider : apiConfiguration?.actModeApiProvider
+						const provider =
+							mode === "plan" ? apiConfiguration?.planModeApiProvider : apiConfiguration?.actModeApiProvider
 
 						// Check for "openai-responses" provider
 						const isOpenAIResponses = provider === "openai-responses"
@@ -1035,37 +1043,24 @@ export const ChatRowContent = memo(
 						const apiReqIndex = apiRequestMessage?.conversationHistoryIndex
 						const showModelSwitcher = isOpenAIResponses && apiReqIndex !== undefined && !message.partial
 
-						// Get current model ID for OpenAI Responses API
-						// For openai-responses provider, use actModeApiModelId / planModeApiModelId
-						const currentModelId = mode === "plan"
-							? apiConfiguration?.planModeApiModelId
-							: apiConfiguration?.actModeApiModelId
-
-						// Debug logging
-						console.log('🔍 Model Switcher Check (text message):', {
-							provider,
-							isOpenAIResponses,
-							apiReqIndex,
-							currentModelId,
-							apiRequestMessage: apiRequestMessage ? {
-								say: apiRequestMessage.say,
-								conversationHistoryIndex: apiRequestMessage.conversationHistoryIndex,
-								ts: apiRequestMessage.ts
-							} : 'NO API REQUEST MESSAGE',
-							previousMessage: previousMessage ? {
-								say: previousMessage.say,
-								conversationHistoryIndex: previousMessage.conversationHistoryIndex
-							} : 'NO PREVIOUS MESSAGE',
-							showModelSwitcher,
-							isPartial: message.partial,
-							mode,
-							reasons: {
-								providerMatch: provider === "openai-responses",
-								hasApiReqIndex: apiReqIndex !== undefined,
-								hasApiRequestMessage: apiRequestMessage !== undefined,
-								isNotPartial: !message.partial
+						// Get model ID from the api_req_started message, not global config
+						// This ensures each message shows the model that was actually used for that request
+						let currentModelId: string | undefined
+						if (apiRequestMessage?.text) {
+							try {
+								const apiReqInfo = JSON.parse(apiRequestMessage.text)
+								currentModelId = apiReqInfo.model // Read from message
+							} catch (e) {
+								// If parsing fails, fall back to global config
+								console.warn("Failed to parse apiRequestMessage.text", e)
 							}
-						})
+						}
+
+						// Fallback to global config if model not in message
+						if (!currentModelId) {
+							currentModelId =
+								mode === "plan" ? apiConfiguration?.planModeApiModelId : apiConfiguration?.actModeApiModelId
+						}
 
 						return (
 							<>
@@ -1356,16 +1351,31 @@ export const ChatRowContent = memo(
 							const text = hasChanges ? message.text.slice(0, -COMPLETION_RESULT_CHANGES_FLAG.length) : message.text
 
 							// Model switcher for OpenAI Responses API (same logic as "text" case)
-							const provider = mode === "plan" ? apiConfiguration?.planModeApiProvider : apiConfiguration?.actModeApiProvider
+							const provider =
+								mode === "plan" ? apiConfiguration?.planModeApiProvider : apiConfiguration?.actModeApiProvider
 							const isOpenAIResponses = provider === "openai-responses"
-							const apiReqIndex = previousMessage?.say === "api_req_started" ? previousMessage?.conversationHistoryIndex : undefined
+							const apiReqIndex =
+								previousMessage?.say === "api_req_started" ? previousMessage?.conversationHistoryIndex : undefined
 							const showModelSwitcher = isOpenAIResponses && apiReqIndex !== undefined
 
-							// Get current model ID for OpenAI Responses API
-							// For openai-responses provider, use actModeApiModelId / planModeApiModelId
-							const currentModelId = mode === "plan"
-								? apiConfiguration?.planModeApiModelId
-								: apiConfiguration?.actModeApiModelId
+							// Get model ID from the api_req_started message, not global config
+							// This ensures each message shows the model that was actually used for that request
+							let currentModelId: string | undefined
+							if (previousMessage?.say === "api_req_started" && previousMessage?.text) {
+								try {
+									const apiReqInfo = JSON.parse(previousMessage.text)
+									currentModelId = apiReqInfo.model // Read from message
+								} catch (e) {
+									// If parsing fails, fall back to global config
+									console.warn("Failed to parse previousMessage.text", e)
+								}
+							}
+
+							// Fallback to global config if model not in message
+							if (!currentModelId) {
+								currentModelId =
+									mode === "plan" ? apiConfiguration?.planModeApiModelId : apiConfiguration?.actModeApiModelId
+							}
 
 							return (
 								<div>

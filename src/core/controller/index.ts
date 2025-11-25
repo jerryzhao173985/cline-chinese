@@ -883,6 +883,15 @@ export class Controller {
 			})
 
 			if (result.success && result.messageToRegenerate) {
+				// CRITICAL FIX: Update UI after clearing old messages
+				// This ensures the webview receives the cleared state before new messages arrive
+				// Without this, the old spinner persists alongside the new one (duplicate spinner bug)
+				await this.postStateToWebview()
+
+				// Wait for webview to process the cleared state
+				// 200ms gives React enough time to re-render with the cleared messages
+				await new Promise((resolve) => setTimeout(resolve, 200))
+
 				// Create a temporary API configuration with the new model
 				const tempApiConfig: ApiConfiguration = {
 					...currentApiConfig,
@@ -936,9 +945,13 @@ export class Controller {
 				this.task.taskState.regenerationModel = modelId
 
 				// Restart the task from the regeneration point
-				// Pass the extracted message to avoid accessing cleared history
+				// Pass the extracted message and preserved timestamp to ensure React updates the same message
 				console.log("🔄 Starting regeneration from point", conversationHistoryIndex, "with model", modelId)
-				await this.task.restartTaskFromPoint(conversationHistoryIndex, result.messageToRegenerate)
+				await this.task.restartTaskFromPoint(
+					conversationHistoryIndex,
+					result.messageToRegenerate,
+					result.preservedTimestamp,
+				)
 				console.log("✅ Regeneration completed successfully")
 			} else {
 				console.error("❌ Regeneration failed:", result.error)

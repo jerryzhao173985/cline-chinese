@@ -198,6 +198,7 @@ export interface ClineAskNewTask {
 
 export interface ClineApiReqInfo {
 	request?: string
+	model?: string // The model ID used for this API request (for correct display in model switcher)
 	tokensIn?: number
 	tokensOut?: number
 	cacheWrites?: number

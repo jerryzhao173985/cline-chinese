@@ -850,7 +850,14 @@ export class Task {
 		this.taskState.askResponseFiles = files
 	}
 
-	async say(type: ClineSay, text?: string, images?: string[], files?: string[], partial?: boolean): Promise<undefined> {
+	async say(
+		type: ClineSay,
+		text?: string,
+		images?: string[],
+		files?: string[],
+		partial?: boolean,
+		preservedTimestamp?: number,
+	): Promise<undefined> {
 		if (this.taskState.abort) {
 			throw new Error("Cline instance aborted")
 		}
@@ -870,7 +877,8 @@ export class Task {
 					await sendPartialMessageEvent(protoMessage)
 				} else {
 					// this is a new partial message, so add it with partial state
-					const sayTs = Date.now()
+					// Use preservedTimestamp if provided (during regeneration) to ensure React sees it as updating the same message
+					const sayTs = preservedTimestamp ?? Date.now()
 					this.taskState.lastMessageTs = sayTs
 					await this.messageStateHandler.addToClineMessages({
 						ts: sayTs,
@@ -901,7 +909,8 @@ export class Task {
 					await sendPartialMessageEvent(protoMessage) // more performant than an entire postStateToWebview
 				} else {
 					// this is a new partial=false message, so add it like normal
-					const sayTs = Date.now()
+					// Use preservedTimestamp if provided (during regeneration) to ensure React sees it as updating the same message
+					const sayTs = preservedTimestamp ?? Date.now()
 					this.taskState.lastMessageTs = sayTs
 					await this.messageStateHandler.addToClineMessages({
 						ts: sayTs,
@@ -916,7 +925,8 @@ export class Task {
 			}
 		} else {
 			// this is a new non-partial message, so add it like normal
-			const sayTs = Date.now()
+			// Use preservedTimestamp if provided (during regeneration) to ensure React sees it as updating the same message
+			const sayTs = preservedTimestamp ?? Date.now()
 			this.taskState.lastMessageTs = sayTs
 			await this.messageStateHandler.addToClineMessages({
 				ts: sayTs,
@@ -1938,7 +1948,11 @@ export class Task {
 		}
 	}
 
-	async recursivelyMakeClineRequests(userContent: UserContent, includeFileDetails: boolean = false): Promise<boolean> {
+	async recursivelyMakeClineRequests(
+		userContent: UserContent,
+		includeFileDetails: boolean = false,
+		preservedTimestamp?: number,
+	): Promise<boolean> {
 		if (this.taskState.abort) {
 			throw new Error("Cline instance aborted")
 		}
@@ -2052,11 +2066,16 @@ export class Task {
 
 		// getting verbose details is an expensive operation, it uses globby to top-down build file structure of project which for large projects can take a few seconds
 		// for the best UX we show a placeholder api_req_started message with a loading spinner as this happens
+		// When regenerating, we reuse the old timestamp to prevent duplicate spinners (React sees it as updating the same message)
 		await this.say(
 			"api_req_started",
 			JSON.stringify({
 				request: userContent.map((block) => formatContentBlockToMarkdown(block)).join("\n\n") + "\n\nLoading...",
 			}),
+			undefined, // images
+			undefined, // files
+			undefined, // partial
+			preservedTimestamp, // reuse timestamp during regeneration to prevent duplicate spinners
 		)
 
 		// Initialize checkpoint tracker first if enabled and it's the first request
@@ -2225,9 +2244,14 @@ export class Task {
 
 		// since we sent off a placeholder api_req_started message to update the webview while waiting to actually start the API request (to load potential details for example), we need to update the text of that message
 		const lastApiReqIndex = findLastIndex(this.messageStateHandler.getClineMessages(), (m) => m.say === "api_req_started")
+
+		// Store the model ID in the api_req_started message so UI can show correct model per message
+		const currentModel = this.api.getModel()
+
 		await this.messageStateHandler.updateClineMessage(lastApiReqIndex, {
 			text: JSON.stringify({
 				request: userContent.map((block) => formatContentBlockToMarkdown(block)).join("\n\n"),
+				model: currentModel.id, // Store model ID for correct display in model switcher
 			} satisfies ClineApiReqInfo),
 			// CRITICAL FIX: Update conversationHistoryIndex to point to the user message we just added
 			// The placeholder api_req_started was created BEFORE the user message was added to apiHistory,
@@ -2825,16 +2849,21 @@ export class Task {
 	 * Restart the task from a specific conversation history point
 	 * Used for regenerating responses with a different model
 	 */
-	async restartTaskFromPoint(conversationHistoryIndex: number, messageToRegenerate: Anthropic.MessageParam) {
+	async restartTaskFromPoint(
+		conversationHistoryIndex: number,
+		messageToRegenerate: Anthropic.MessageParam,
+		preservedTimestamp?: number,
+	) {
 		try {
 			// CRITICAL: Clear the abort flag that was set when we aborted the task
 			// Without this, the task will immediately fail with "Current ask promise was ignored"
 			this.taskState.abort = false
 
 			// Use the temporary API handler if we're regenerating
-			const apiToUse = this.taskState.isRegeneratingFromPoint && this.taskState.temporaryApiHandler
-				? this.taskState.temporaryApiHandler
-				: this.api
+			const apiToUse =
+				this.taskState.isRegeneratingFromPoint && this.taskState.temporaryApiHandler
+					? this.taskState.temporaryApiHandler
+					: this.api
 
 			// Validate the message to regenerate
 			if (!messageToRegenerate || messageToRegenerate.role !== "user") {
@@ -2857,7 +2886,8 @@ export class Task {
 
 			// Make the API request with the new model
 			// This will add the user message to history and then make the API call
-			await this.recursivelyMakeClineRequests(userContent, false)
+			// Pass the preservedTimestamp so the new api_req_started message reuses the old timestamp
+			await this.recursivelyMakeClineRequests(userContent, false, preservedTimestamp)
 
 			// Restore the original API handler
 			this.api = originalApi
@@ -2867,7 +2897,6 @@ export class Task {
 			this.taskState.regenerationPoint = undefined
 			this.taskState.regenerationModel = undefined
 			this.taskState.temporaryApiHandler = undefined
-
 		} catch (error) {
 			console.error("❌ Error restarting task from point:", error)
 
